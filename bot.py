@@ -104,4 +104,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup
         )
     
-    elif query.data
+    elif query.data == "score":
+        score = game.scores.get(user_id, {}).get("score", 0)
+        await query.answer(f"Ton score: {score} points", show_alert=True)
+    
+    elif query.data == "leaderboard":
+        game.load_scores()
+        sorted_scores = sorted(game.scores.items(), key=lambda x: x[1]["score"], reverse=True)[:10]
+        
+        leaderboard = "🏆 TOP 10:\n\n"
+        for i, (uid, data) in enumerate(sorted_scores, 1):
+            leaderboard += f"{i}. {data['name']}: {data['score']} pts\n"
+        
+        keyboard = [[InlineKeyboardButton("🎯 JOUER", callback_data="play")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            leaderboard,
+            reply_markup=reply_markup
+        )
+
+app = Application.builder().token(TOKEN).build()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CallbackQueryHandler(button_handler))
+
+if __name__ == "__main__":
+    print("Bot démarré!")
+    app.run_polling()
