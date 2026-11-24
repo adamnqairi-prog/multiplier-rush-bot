@@ -1,10 +1,49 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 import random, json, os, threading, time
+import httpx
 from flask import Flask
 
 TOKEN = os.environ.get('BOT_TOKEN')
 PORT = int(os.environ.get('PORT', 5000))
+
+# ------------------------------------------------------------------
+# LLM gratuit (API compatible OpenAI) — Groq par défaut
+#   Clé gratuite : https://console.groq.com/keys
+#   Alternative  : OpenRouter -> LLM_BASE_URL=https://openrouter.ai/api/v1
+#                               LLM_MODEL=<un modèle ":free">
+# ------------------------------------------------------------------
+LLM_API_KEY = os.environ.get('LLM_API_KEY')
+LLM_BASE_URL = os.environ.get('LLM_BASE_URL', 'https://api.groq.com/openai/v1').rstrip('/')
+LLM_MODEL = os.environ.get('LLM_MODEL', 'llama-3.3-70b-versatile')
+LLM_SYSTEM_PROMPT = os.environ.get(
+    'LLM_SYSTEM_PROMPT',
+    "Tu es l'assistant du jeu Telegram « Multiplier Rush ». Réponds en français, "
+    "de façon courte, fun et utile."
+)
+
+async def ask_llm(prompt: str) -> str:
+    if not LLM_API_KEY:
+        return "⚠️ L'IA n'est pas configurée (variable LLM_API_KEY manquante)."
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                f"{LLM_BASE_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {LLM_API_KEY}"},
+                json={
+                    "model": LLM_MODEL,
+                    "messages": [
+                        {"role": "system", "content": LLM_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_tokens": 500,
+                },
+            )
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"Erreur LLM: {e!r}")
+        return "😕 L'IA est indisponible pour le moment, réessaie plus tard."
 
 # Mini serveur Flask pour que Render « voie » le service
 flask_app = Flask(__name__)
@@ -48,7 +87,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎯 Objectif: Obtenir le score le plus élevé\n"
         f"💰 Points: 1-10 par clic\n"
         f"✨ Multiplicateurs: x2 (20%) ou x3 (10%)\n"
-        f"🔥 Combo: +5 points toutes les 10 clics!\n\n"
+        f"🔥 Combo: +5 points toutes les 10 clics!\n"
+        f"🤖 IA: /ask <question> ou écris-moi directement\n\n"
         f"_Clique sur JOUER pour commencer!_",
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(keyboard)
@@ -108,10 +148,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("🎯 JOUER", callback_data="play")]]
         await query.edit_message_text(leaderboard, reply_markup=InlineKeyboardMarkup(keyboard))
 
+async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    question = " ".join(context.args) if context.args else ""
+    if not question:
+        await update.message.reply_text("Utilise: /ask <ta question>")
+        return
+    await update.message.chat.send_action("typing")
+    await update.message.reply_text(await ask_llm(question))
+
+async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.chat.send_action("typing")
+    await update.message.reply_text(await ask_llm(update.message.text))
+
 # Lancement du bot
 app = Application.builder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("ask", ask))
 app.add_handler(CallbackQueryHandler(button_handler))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
 if __name__ == "__main__":
     print("Bot démarré!")
